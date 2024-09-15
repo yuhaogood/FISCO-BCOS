@@ -36,8 +36,7 @@
 
 
 # ignore some directory
-build
-build/**
+build**
 deps
 deps/**
 
@@ -46,6 +45,29 @@ deps/**
 *.vcxproj*
 .vs/
 .vscode/
+.idea/
 
 # macOS
 .DS_Store
+
+# log
+*.log
+
+# python
+*.pyc
+
+# vcpkg
+vcpkg
+
+# clangd file
+compile_commands.json
+.cache
+
+# generated test
+tools/BcosAirBuilder/nodes**
+tools/BcosProBuilder/generated**
+tools/BcosAirBuilder/*
+*.log
+
+test/*
+/CMakeSettings.json

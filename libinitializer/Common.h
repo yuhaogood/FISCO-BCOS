@@ -1,50 +1,89 @@
-/*
-    This file is part of FISCO-BCOS.
-
-    FISCO-BCOS is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
-
-    FISCO-BCOS is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with FISCO-BCOS.  If not, see <http://www.gnu.org/licenses/>.
-*/
-/** @file Common.h
- *  @author chaychen
- *  @modify first draft
- *  @date 20181022
+/**
+ *  Copyright (C) 2021 FISCO BCOS.
+ *  SPDX-License-Identifier: Apache-2.0
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *
+ * @brief Common for libinitializer
+ * @file Common.h
+ * @author: yujiechen
+ * @date 2021-06-10
  */
-
 #pragma once
+#include <bcos-framework/Common.h>
+#include <bcos-framework/security/DataEncryptInterface.h>
+#include <bcos-tool/Exceptions.h>
+#include <bcos-utilities/DataConvertUtility.h>
+#include <bcos-utilities/Exceptions.h>
+#include <bcos-utilities/FileUtility.h>
+#include <openssl/engine.h>
+#include <openssl/rsa.h>
+#include <boost/filesystem.hpp>
+#include <memory>
 
-#include <libdevcore/Exceptions.h>
-#include <libdevcore/easylog.h>
-#include <libdevcrypto/Common.h>
-#include <boost/property_tree/ini_parser.hpp>
-#include <boost/property_tree/ptree.hpp>
+#define INITIALIZER_LOG(LEVEL) BCOS_LOG(LEVEL) << "[INITIALIZER]"
+namespace bcos::initializer
+{
+inline std::shared_ptr<bytes> loadPrivateKey(std::string const& _keyPath,
+    unsigned _hexedPrivateKeySize, bcos::security::DataEncryptInterface::Ptr _certEncryptionHandler)
+{
+    std::shared_ptr<EC_KEY> ecKey;
+    try
+    {
+        auto content = readContents(boost::filesystem::path(_keyPath));
+        auto keyContent = content;
+        if (_certEncryptionHandler)
+        {
+            keyContent = _certEncryptionHandler->decryptContents(content);
+        }
+        if (keyContent->empty())
+        {
+            return nullptr;
+        }
 
-#define INITIALIZER_LOG(LEVEL) LOG(LEVEL) << "[INITIALIZER]"
-#define ERROR_OUTPUT std::cout << "[INITIALIZER]"
+        INITIALIZER_LOG(INFO) << LOG_BADGE("SecureInitializer") << LOG_DESC("loading privateKey");
+        std::shared_ptr<BIO> bioMem(BIO_new(BIO_s_mem()), [&](BIO* p) { BIO_free(p); });
+        BIO_write(bioMem.get(), keyContent->data(), keyContent->size());
 
-namespace dev
-{
-DEV_SIMPLE_EXCEPTION(InvalidListenPort);
-DEV_SIMPLE_EXCEPTION(ListenPortIsUsed);
-DEV_SIMPLE_EXCEPTION(ConfigNotExist);
-DEV_SIMPLE_EXCEPTION(InvalidConfig);
-DEV_SIMPLE_EXCEPTION(InitFailed);
-namespace initializer
-{
-inline bool isValidPort(int port)
-{
-    if (port <= 1024 || port > 65535)
-        return false;
-    return true;
+        std::shared_ptr<EVP_PKEY> evpPKey(PEM_read_bio_PrivateKey(bioMem.get(), NULL, NULL, NULL),
+            [](EVP_PKEY* p) { EVP_PKEY_free(p); });
+        if (!evpPKey)
+        {
+            return nullptr;
+        }
+        ecKey.reset(EVP_PKEY_get1_EC_KEY(evpPKey.get()), [](EC_KEY* p) { EC_KEY_free(p); });
+    }
+    catch (bcos::Exception& e)
+    {
+        INITIALIZER_LOG(ERROR) << LOG_BADGE("SecureInitializer")
+                               << LOG_DESC("parse privateKey failed") << LOG_KV("file", _keyPath)
+                               << LOG_KV("EINFO", boost::diagnostic_information(e));
+        BOOST_THROW_EXCEPTION(bcos::tool::InvalidConfig() << errinfo_comment(
+                                  "SecureInitializer: parse privateKey failed:" + _keyPath));
+    }
+    std::shared_ptr<const BIGNUM> ecPrivateKey(
+        EC_KEY_get0_private_key(ecKey.get()), [](const BIGNUM*) {});
+
+    std::shared_ptr<char> privateKeyData(
+        BN_bn2hex(ecPrivateKey.get()), [](char* p) { OPENSSL_free(p); });
+    std::string keyHex(privateKeyData.get());
+    if (keyHex.size() >= _hexedPrivateKeySize)
+    {
+        return fromHexString(keyHex);
+    }
+    for (size_t i = keyHex.size(); i < _hexedPrivateKeySize; i++)
+    {
+        keyHex = '0' + keyHex;
+    }
+    return fromHexString(keyHex);
 }
-}  // namespace initializer
-}  // namespace dev
+}  // namespace bcos::initializer

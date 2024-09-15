@@ -1,259 +1,169 @@
-version: 2
-jobs:
-  build_static_test:
-    working_directory: /FISCO-BCOS
-    docker:
-      - image: ubuntu:16.04
+version: 2.1
+
+commands:
+  install_depencies:
+    description: Setup Ubuntu dependencies
+    parameters:
+      packages:
+        type: string
+        default: ""
     steps:
       - run:
           name: Setup dependencies
           command: |
             apt-get update
-            apt-get install -y git g++ make curl lcov build-essential cmake libssl-dev zlib1g-dev ccache
+            ln -fs /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
+            apt-get install -y cmake g++ git curl build-essential autoconf texinfo cmake flex bison libzstd-dev zlib1g-dev libpython3-dev python-dev << parameters.packages >>
             echo 'export CCACHE_DIR=/ccache' >> $BASH_ENV
+            curl https://sh.rustup.rs -sSf | bash -s -- -y
+            source $HOME/.cargo/env
+  compile:
+    description: Compile
+    parameters:
+      options:
+        type: string
+        default: ""
+      compiler:
+        type: string
+        default: ""
+    steps:
+      - run:
+          name: Compile
+          no_output_timeout: 40m
+          command: |
+            source $HOME/.cargo/env
+            mkdir -p build && cd build
+            << parameters.compiler >> cmake -DURL_BASE=github.com -DCMAKE_BUILD_TYPE=debug -DHUNTER_JOBS_NUMBER=1 << parameters.options >> ..
+            make -j2
+executors:
+  ubuntu-bionic:
+    docker:
+      - image: ubuntu:18.04
+  ubuntu-focal:
+    docker:
+      - image: ubuntu:20.04
+
+jobs:
+  build_test:
+    working_directory: /FISCO-BCOS
+    executor: ubuntu-focal
+    steps:
+      - install_depencies:
+          packages: "git curl build-essential cmake ccache lcov libzstd-dev libgmp-dev"
       - checkout
       - restore_cache:
           keys:
-            - deps-cache-{{ checksum "/proc/version" }}-{{ .Environment.CIRCLE_JOB }}-{{ .Branch }}-{{ checksum ".circleci/config.yml" }}
-            - deps-cache-{{ checksum "/proc/version" }}-{{ .Environment.CIRCLE_JOB }}-{{ .Branch }}-
-            - deps-cache-{{ checksum "/proc/version" }}-{{ .Environment.CIRCLE_JOB }}-
-      - run:
-          name: Compile
-          command: |
-            mkdir -p build && cd build
-            cmake -DBUILD_STATIC=ON -DTESTS=ON -DCOVERAGE=ON ..
-            make -j2
+            - deps-cache-v1-{{ .Environment.CIRCLE_JOB }}-{{ .Environment.CIRCLE_BRANCH }}-{{ checksum ".circleci/config.yml" }}
+            - deps-cache-v1-{{ .Environment.CIRCLE_JOB }}-{{ .Environment.CIRCLE_BRANCH }}-
+            - deps-cache-v1-{{ .Environment.CIRCLE_JOB }}-
+      - compile:
+          options: "-DTESTS=ON -DCOVERAGE=ON -DCMAKE_BUILD_TYPE=Debug"
       - save_cache:
-          key: deps-cache-{{ checksum "/proc/version" }}-{{ .Environment.CIRCLE_JOB }}-{{ .Branch }}-{{ checksum ".circleci/config.yml" }}
+          key: deps-cache-v1-{{ .Environment.CIRCLE_JOB }}-{{ .Environment.CIRCLE_BRANCH }}-{{ checksum ".circleci/config.yml" }}
           paths:
             - deps
             - /ccache
+            - /root/.hunter
       - run:
           name: Unit test
           command: |
             cd build
             CTEST_OUTPUT_ON_FAILURE=TRUE make test
+            rm -rf /FISCO-BCOS/deps
+      - persist_to_workspace:
+          root: /
+          paths:
+            - FISCO-BCOS/build/*
+            - FISCO-BCOS/test/*
+            - FISCO-BCOS/tools/*
+
+  generate_coverage:
+    working_directory: /FISCO-BCOS
+    executor: ubuntu-focal
+    steps:
+      - install_depencies:
+          packages: "lcov"
+      - attach_workspace:
+          at: /
       - run:
           name: Upload Coverage
           command: |
-            bash <(curl -s https://codecov.io/bash) -C $CIRCLE_SHA1 -g ./deps/** > /dev/null
+            bash <(curl -s https://codecov.io/bash) -C $CIRCLE_SHA1 -f "!*/deps/*" > /dev/null
+
 
   build_test_guomi:
     working_directory: /FISCO-BCOS-GM
     docker:
-        - image: centos:7
+      - image: centos:7
     steps:
       - run:
           name: Setup dependencies
           command: |
-            yum install -y epel-release
-            yum install -y git make gcc-c++ cmake3 openssl-devel openssl ccache
+            yum install -y epel-release centos-release-scl
+            yum install -y git make gcc gcc-c++ gmp-static glibc-static glibc-devel cmake3 ccache devtoolset-7 libzstd-devel zlib-devel flex bison python-devel python3-devel && source /opt/rh/devtoolset-7/enable
+            yum install -y https://repo.ius.io/ius-release-el7.rpm https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm          
             echo 'export CCACHE_DIR=/ccache' >> $BASH_ENV
+            curl https://sh.rustup.rs -sSf | bash -s -- -y
+            source $HOME/.cargo/env
       - checkout
       - restore_cache:
           keys:
-            - deps-cache-{{ checksum "/proc/version" }}-{{ .Environment.CIRCLE_JOB }}-{{ .Branch }}-{{ checksum ".circleci/config.yml" }}
-            - deps-cache-{{ checksum "/proc/version" }}-{{ .Environment.CIRCLE_JOB }}-{{ .Branch }}-
-            - deps-cache-{{ checksum "/proc/version" }}-{{ .Environment.CIRCLE_JOB }}-
+            - deps-v1-{{ .Environment.CIRCLE_JOB }}-{{ .Environment.CIRCLE_BRANCH }}-{{ checksum ".circleci/config.yml" }}
+            - deps-v1-{{ .Environment.CIRCLE_JOB }}-{{ .Environment.CIRCLE_BRANCH }}-
+            - deps-v1-{{ .Environment.CIRCLE_JOB }}-
       - run:
           name: Compile
+          no_output_timeout: 40m
           command: |
+            source /opt/rh/devtoolset-7/enable
+            source $HOME/.cargo/env
+            yum list devtoolset-7\*
             mkdir -p build && cd build
-            cmake3 -DBUILD_GM=ON -DTESTS=ON -DDEMO=ON -DEASYLOG=ON ..
+            cmake3 -DURL_BASE=github.com -DCMAKE_BUILD_TYPE=debug -DTESTS=ON -DHUNTER_JOBS_NUMBER=1 ..
             make -j2
       - save_cache:
-          key: deps-cache-{{ checksum "/proc/version" }}-{{ .Environment.CIRCLE_JOB }}-{{ .Branch }}-{{ checksum ".circleci/config.yml" }}
+          key: deps-v1-{{ .Environment.CIRCLE_JOB }}-{{ .Environment.CIRCLE_BRANCH }}-{{ checksum ".circleci/config.yml" }}
           paths:
             - deps
             - /ccache
+            - /root/.hunter
       - run:
           name: Unit test
           command: |
             cd build
-            ./bin/test-fisco-bcos -- --testpath=../test/data/ 
+            make test
       - run:
           name: Run GM nodes
           command: |
             cd build
-            ../tools/build_chain.sh -l "127.0.0.1:4" -e bin/fisco-bcos -g && cd nodes/127.0.0.1 && bash start_all.sh && sleep 2 && [[ $(ps -ef| grep fisco-bcos |grep -v grep | wc -l) == 4 ]]
+            ../tools/BcosAirBuilder/build_chain.sh -l "127.0.0.1:4" -e fisco-bcos-air/fisco-bcos -s && cd nodes/127.0.0.1 && bash start_all.sh && sleep 10 && [[ $(ps -ef| grep fisco-bcos |grep -v grep | wc -l) == 4 ]]
 
-  build_static:
-    working_directory: /FISCO-BCOS
-    docker:
-      - image: ubuntu:18.04
-    steps:
-      - run:
-          name: Setup dependencies
-          command: |
-            apt-get update
-            apt-get install -y git clang make curl build-essential cmake libssl-dev zlib1g-dev g++ ccache
-            echo 'export CCACHE_DIR=/ccache' >> $BASH_ENV
-      - checkout
-      - restore_cache:
-          keys:
-            - deps-cache-{{ checksum "/proc/version" }}-{{ .Environment.CIRCLE_JOB }}-{{ .Branch }}-{{ checksum ".circleci/config.yml" }}
-      - run:
-          name: Compile
-          command: |
-            mkdir -p build && cd build
-            CC=/usr/bin/clang CXX=/usr/bin/clang++ cmake -DBUILD_STATIC=ON ..
-            make -j2
-      - save_cache:
-          key: deps-cache-{{ checksum "/proc/version" }}-{{ .Environment.CIRCLE_JOB }}-{{ .Branch }}-{{ checksum ".circleci/config.yml" }}
-          paths:
-            - deps
-            - /ccache
-      - run:
-          name: Upload binary
-          command: |
-            cd build/bin
-            tar -zcf fisco-bcos.tar.gz fisco-bcos
-      - store_artifacts:
-          path: /FISCO-BCOS/build/bin/fisco-bcos.tar.gz
-          destination: fisco-bcos.tar.gz
-      # - persist_to_workspace:
-      #     root: build
-      #     paths:
-      #       - bin
-
-  build_guomi:
-    working_directory: /FISCO-BCOS-GM
-    docker:
-      - image: ubuntu:18.04
-    steps:
-      - run:
-          name: Setup dependencies
-          command: |
-            apt-get update
-            apt-get install -y git clang make curl build-essential cmake libssl-dev zlib1g-dev g++ ccache
-            echo 'export CCACHE_DIR=/ccache' >> $BASH_ENV
-      - checkout
-      - restore_cache:
-          keys:
-            - deps-cache-{{ checksum "/proc/version" }}-{{ .Environment.CIRCLE_JOB }}-{{ .Branch }}-{{ checksum ".circleci/config.yml" }}
-      - run:
-          name: Compile
-          command: |
-            mkdir -p build && cd build 
-            CC=/usr/bin/clang CXX=/usr/bin/clang++ cmake -DBUILD_STATIC=ON -DBUILD_GM=ON ..
-            make -j2
-      - save_cache:
-          key: deps-cache-{{ checksum "/proc/version" }}-{{ .Environment.CIRCLE_JOB }}-{{ .Branch }}-{{ checksum ".circleci/config.yml" }}
-          paths:
-            - deps
-            - /ccache
-      - run:
-          name: Upload binary
-          command: |
-            cd build/bin
-            tar -zcf fisco-bcos-gm.tar.gz fisco-bcos
-      - store_artifacts:
-          path: /FISCO-BCOS-GM/build/bin/fisco-bcos-gm.tar.gz
-          destination: fisco-bcos-gm.tar.gz
-      # - persist_to_workspace:
-      #     root: build
-      #     paths:
-      #       - bin
-
-  deploy_static:
-    working_directory: /FISCO-BCOS
-    docker:
-      - image: ubuntu:18.04
-    steps:
-      - run:
-          name: Setup dependencies
-          command: |
-            apt-get update
-            apt-get install -y ca-certificates golang-go clang git clang make curl build-essential cmake libssl-dev zlib1g-dev
-      - checkout
-      - run:
-          name: Compile
-          command: |
-            mkdir -p build && cd build
-            CC=/usr/bin/clang CXX=/usr/bin/clang++ cmake -DBUILD_STATIC=ON -DCMAKE_BUILD_TYPE=Release ..
-            make -j2
-      - run:
-          name: Strip
-          command: |
-            cd build/bin
-            strip fisco-bcos
-            tar -zcf fisco-bcos.tar.gz fisco-bcos
-      - run:
-          name: Upload to GitHub Release
-          command: |
-            go get github.com/tcnksm/ghr
-            ghr -t ${GITHUB_TOKEN} -u ${CIRCLE_PROJECT_USERNAME} -r ${CIRCLE_PROJECT_REPONAME} -c ${CIRCLE_SHA1} -delete ${CIRCLE_TAG} /FISCO-BCOS/build/bin/fisco-bcos.tar.gz
-
-  deploy_guomi:
-    working_directory: /FISCO-BCOS-GM
-    docker:
-      - image: ubuntu:18.04
-    steps:
-      - run:
-          name: Setup dependencies
-          command: |
-            apt-get update
-            apt-get install -y ca-certificates golang-go clang git clang make curl build-essential cmake libssl-dev zlib1g-dev
-      - checkout
-      - run:
-          name: Compile
-          command: |
-            mkdir -p build && cd build
-            CC=/usr/bin/clang CXX=/usr/bin/clang++ cmake -DBUILD_STATIC=ON -DBUILD_GM=ON  -DCMAKE_BUILD_TYPE=Release ..
-            make -j2
-      - run:
-          name: Strip
-          command: |
-            cd build/bin
-            strip fisco-bcos
-            tar -zcf fisco-bcos-gm.tar.gz fisco-bcos
-      - run:
-          name: Upload to GitHub Release
-          command: |
-            go get github.com/tcnksm/ghr
-            ghr -t ${GITHUB_TOKEN} -u ${CIRCLE_PROJECT_USERNAME} -r ${CIRCLE_PROJECT_REPONAME} -c ${CIRCLE_SHA1} -delete ${CIRCLE_TAG} /FISCO-BCOS-GM/build/bin/fisco-bcos-gm.tar.gz
 
 workflows:
   version: 2
   build_and_test:
     jobs:
-      - build_static_test:
+      - build_test:
           filters:
             branches:
-              only: /^pull.*/
+              only:
+                - /^pull.*/
+            tags:
+              ignore: /.*/
+      - generate_coverage:
+          requires:
+            - build_test
+          filters:
+            branches:
+              only:
+                - /^pull.*/
             tags:
               ignore: /.*/
       - build_test_guomi:
           filters:
             branches:
-              only: /^pull.*/
-            tags:
-              ignore: /.*/
-      - build_static:
-          filters:
-            branches:
-              ignore: /^pull.*/
-            tags:
-              ignore: /.*/
-      - build_guomi:
-          filters:
-            branches:
-              ignore: /^pull.*/
-            tags:
-              ignore: /.*/
-  deploy:
-    jobs:
-      - deploy_static:
-          filters:
-            tags:
               only:
-                - /v2.*/
-            branches:
-              ignore: /.*/
-      - deploy_guomi:
-          filters:
+                - /^pull.*/
+                - /^release.*/
             tags:
-              only:
-                - /v2.*/
-            branches:
               ignore: /.*/

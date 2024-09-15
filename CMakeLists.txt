@@ -1,117 +1,148 @@
-#------------------------------------------------------------------------------
-# Top-level CMake file for FISCO-BCOS.
-# ------------------------------------------------------------------------------
-# This file is part of FISCO-BCOS.
-#
-# FISCO-BCOS is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# FISCO-BCOS is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with FISCO-BCOS.  If not, see <http://www.gnu.org/licenses/>
-#
-# (c) 2016-2018 fisco-dev contributors.
-#------------------------------------------------------------------------------
+cmake_minimum_required(VERSION 3.14)
 
-cmake_minimum_required(VERSION 3.4)
-set(FISCO_BCOS_CMAKE_DIR "${CMAKE_CURRENT_LIST_DIR}/cmake" CACHE PATH "The path to the cmake directory")
-list(APPEND CMAKE_MODULE_PATH ${FISCO_BCOS_CMAKE_DIR})
+if(NOT DEFINED URL_BASE)
+    set(URL_BASE "github.com")
+endif()
 
-project(FISCO-BCOS VERSION "2.0.0")
-# Suffix like "-rc1" e.t.c. to append to versions wherever needed.
-set(VERSION_SUFFIX "-rc3")
+list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake)
 
-find_package(Git QUIET)
-if(GIT_FOUND AND EXISTS "${PROJECT_SOURCE_DIR}/.git")
-    option(GIT_SUBMODULE "Check submodules during build" ON)
-    if(GIT_SUBMODULE)
-        execute_process(COMMAND ${GIT_EXECUTABLE} submodule update --init --recursive
-                        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-                        RESULT_VARIABLE GIT_SUBMOD_RESULT)
-        if(NOT GIT_SUBMOD_RESULT EQUAL "0")
-            message(FATAL_ERROR "git submodule update --init failed with ${GIT_SUBMOD_RESULT}, please checkout submodules")
-        endif()
+set(VERSION "3.11.0")
+set(VERSION_SUFFIX "")
+include(Options)
+configure_project()
+
+if (WIN32)
+# to fix boost log link error in Windows8 API
+# https://github.com/microsoft/vcpkg/discussions/22762
+#    add_definitions(-D_WIN32_WINNT=0x0601)
+#    set(VCPKG_C_FLAGS -D_WIN32_WINNT=0x0601 -DWINVER=0x0601)
+#    set(VCPKG_CXX_FLAGS -D_WIN32_WINNT=0x0601 -DWINVER=0x0601)
+    add_definitions(-DBOOST_USE_WINAPI_VERSION=BOOST_WINAPI_VERSION_WIN7)
+    set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS "ON")
+endif ()
+
+# vcpkg init
+if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+    find_package(Git REQUIRED)
+    execute_process(COMMAND ${GIT_EXECUTABLE} submodule update --init --recursive -- vcpkg WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+    set(CMAKE_TOOLCHAIN_FILE "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg/scripts/buildsystems/vcpkg.cmake"
+        CACHE STRING "Vcpkg toolchain file")
+endif()
+
+project(FISCO-BCOS VERSION ${VERSION})
+
+include(CompilerSettings)
+include(BuildInfoGenerator)
+
+include(IncludeDirectories)
+include(TargetSettings)
+
+add_subdirectory(bcos-boostssl)
+add_subdirectory(bcos-framework)
+add_subdirectory(bcos-crypto)
+add_subdirectory(bcos-utilities)
+add_subdirectory(concepts)
+add_subdirectory(libtask)
+add_subdirectory(bcos-tars-protocol)
+add_subdirectory(bcos-protocol)
+add_subdirectory(bcos-codec)
+if(NOT ONLY_CPP_SDK)
+    include(ProjectITTAPI)
+endif ()
+
+if(WITH_LIGHTNODE)
+    add_subdirectory(lightnode)
+endif()
+
+if(FULLNODE)
+    if(WITH_WASM)
+        include(ProjectWABT)
+        include(ProjectBCOSWASM)
+    endif()
+    include(ProjectGroupSig)
+    include(ProjectPaillier)
+    include(ProjectBLST)
+
+    add_subdirectory(bcos-sealer)
+    add_subdirectory(bcos-security)
+    add_subdirectory(bcos-scheduler)
+    add_subdirectory(bcos-executor)
+    add_subdirectory(bcos-storage)
+    add_subdirectory(bcos-ledger)
+    add_subdirectory(bcos-rpc)
+    add_subdirectory(bcos-gateway)
+    add_subdirectory(bcos-pbft)
+    add_subdirectory(bcos-rpbft)
+    add_subdirectory(bcos-tool)
+    add_subdirectory(bcos-table)
+    add_subdirectory(bcos-txpool)
+    add_subdirectory(bcos-sync)
+    add_subdirectory(bcos-front)
+    add_subdirectory(bcos-leader-election)
+    add_subdirectory(libinitializer)
+    add_subdirectory(fisco-bcos-air)
+
+    add_subdirectory(transaction-executor)
+    add_subdirectory(transaction-scheduler)
+
+    if(WITH_TARS_SERVICES)
+        add_subdirectory(fisco-bcos-tars-service)
+    endif()
+
+    if(TESTS)
+        enable_testing()
+        add_subdirectory(tests)
+        add_subdirectory(benchmark)
     endif()
 endif()
 
-if(NOT EXISTS "${CMAKE_SOURCE_DIR}/evmc/.git")
-    message(FATAL_ERROR "The submodules were not downloaded! GIT_SUBMODULE was turned off or failed. Please execute:\n  git submodule update --init")
+if(WITH_CPPSDK)
+    add_subdirectory(bcos-sdk)
 endif()
 
-set(CMAKE_SKIP_INSTALL_ALL_DEPENDENCY On)
-
-# basic setting
-include(EthOptions)
-include(EthCompilerSettings)
-include(EthDependencies)
-
-# install dependencies
-include(ProjectTBB)
-include(ProjectSnappy)
-include(ProjectLevelDB)
-include(ProjectRocksDB)
-include(ProjectMHD)
-include(ProjectCryptopp)
-include(ProjectSecp256k1)
-include(ProjectJsonCpp)
-include(ProjectJsonRpcCpp)
-include(ProjectTASSL)
-include(ProjectBoost)
-include(ProjectLibzdb)
-
-
-include_directories("${CMAKE_SOURCE_DIR}" "evmc/include")
-
-configure_project(TESTS)
-add_subdirectory(libchannelserver)
-add_subdirectory(libdevcore)
-add_subdirectory(libdevcrypto)
-add_subdirectory(libethcore)
-add_subdirectory(evmc)
-add_subdirectory(libinterpreter)
-add_subdirectory(libevm)
-add_subdirectory(libtxpool)
-add_subdirectory(libstorage)
-add_subdirectory(libprecompiled)
-add_subdirectory(libnetwork)
-add_subdirectory(libp2p)
-add_subdirectory(libexecutive)
-add_subdirectory(libmptstate)
-add_subdirectory(libblockverifier)
-add_subdirectory(libstoragestate)
-add_subdirectory(libblockchain)
-add_subdirectory(libsync)
-add_subdirectory(libconsensus)
-add_subdirectory(libledger)
-add_subdirectory(librpc)
-add_subdirectory(libinitializer)
-add_subdirectory(libsecurity)
-# generate executable binary fisco-bcos
-add_subdirectory(fisco-bcos)
-
-
-if (TESTS)
-    enable_testing()
-    set(CTEST_OUTPUT_ON_FAILURE TRUE)
-    add_subdirectory(test)
+if(TOOLS)
+  add_subdirectory(tools)
 endif()
 
-find_package(Doxygen QUIET)
-if(DOXYGEN_FOUND)
-# Requirements: doxygen graphviz
-  set(doxyfile_in ${CMAKE_CURRENT_SOURCE_DIR}/.Doxyfile.in)
-  set(doxyfile ${CMAKE_CURRENT_BINARY_DIR}/Doxyfile)
-  configure_file(${doxyfile_in} ${doxyfile} @ONLY)
-# Add doc target
-add_custom_target(doc COMMAND ${DOXYGEN_EXECUTABLE} ${doxyfile}
-                       WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-                       COMMENT "Generating documentation with Doxygen..." VERBATIM)
-elseif()
-  message(WARNING "Doxygen is needed to build the documentation. Please install doxygen and graphviz") 
+# for code coverage
+if(COVERAGE)
+    include(Coverage)
+    set(TESTS ON)
+    if ("${CMAKE_CXX_COMPILER_ID}" MATCHES "GNU")
+        set(CMAKE_CXX_FLAGS "-g --coverage ${CMAKE_CXX_FLAGS}")
+        set(CMAKE_C_FLAGS "-g --coverage ${CMAKE_C_FLAGS}")
+        set(CMAKE_SHARED_LINKER_FLAGS "--coverage ${CMAKE_SHARED_LINKER_FLAGS}")
+        set(CMAKE_EXE_LINKER_FLAGS "--coverage ${CMAKE_EXE_LINKER_FLAGS}")
+    elseif ("${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang")
+        add_compile_options(-Wno-unused-command-line-argument)
+        set(CMAKE_CXX_FLAGS "-g -fprofile-arcs -ftest-coverage ${CMAKE_CXX_FLAGS}")
+        set(CMAKE_C_FLAGS "-g -fprofile-arcs -ftest-coverage ${CMAKE_C_FLAGS}")
+    endif()
+    config_coverage("coverage" "")
+endif()
+
+print_config("FISCO BCOS")
+
+include(CMakePackageConfigHelpers)
+configure_package_config_file(
+  "${CMAKE_SOURCE_DIR}/cmake/fiscobcos-config.cmake.in"
+  "${CMAKE_BINARY_DIR}/fiscobcos-config.cmake"
+  INSTALL_DESTINATION "share/fiscobcos"
+)
+
+install(
+  FILES "${CMAKE_BINARY_DIR}/fiscobcos-config.cmake"
+  DESTINATION "share/fiscobcos"
+)
+
+install(
+    EXPORT fiscobcosTargets
+    DESTINATION share/fiscobcos
+    NAMESPACE fiscobcos::
+)
+# copy pre-commit to git hook
+
+if(NOT EXISTS ${CMAKE_SOURCE_DIR}/.git/hooks/pre-commit AND EXISTS ${CMAKE_SOURCE_DIR}/.git/hooks)
+    file(COPY ${CMAKE_SOURCE_DIR}/tools/.ci/pre-commit DESTINATION ${CMAKE_SOURCE_DIR}/.git/hooks
+            FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
 endif()
